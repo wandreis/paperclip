@@ -3,6 +3,7 @@ import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
 import { agentsApi } from "../api/agents";
+import { issuesApi } from "../api/issues";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -10,13 +11,13 @@ import { cn } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { buttonVariants } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { MessageSquare, ShieldCheck } from "lucide-react";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { listPendingBoardDecisionItems, type BoardDecisionItem, type ThreadDecisionItem } from "../lib/boardDecisionItems";
 import { timeAgo } from "../lib/timeAgo";
-import type { Agent, Approval } from "@paperclipai/shared";
+import type { Agent, Approval, AskUserQuestionsAnswer, AskUserQuestionsPayload, RequestConfirmationPayload } from "@paperclipai/shared";
 
 type StatusFilter = "pending" | "all";
 
@@ -40,6 +41,7 @@ function BoardDecisionItemCard({
   requesterAgent,
   onApprove,
   onReject,
+  onInteractionResolved,
   isPending,
   pendingAction,
 }: {
@@ -47,6 +49,7 @@ function BoardDecisionItemCard({
   requesterAgent: Agent | null;
   onApprove?: () => void;
   onReject?: () => void;
+  onInteractionResolved?: () => void;
   isPending: boolean;
   pendingAction: "approve" | "reject" | null;
 }) {
@@ -63,6 +66,74 @@ function BoardDecisionItemCard({
       />
     );
   }
+
+  const [selectedOptions, setSelectedOptions] = useState<Record<string, string[]>>({});
+  const [rejectReason, setRejectReason] = useState("");
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [isSubmittingInteraction, setIsSubmittingInteraction] = useState(false);
+
+  const setQuestionOption = (questionId: string, optionId: string, selectionMode: "single" | "multi") => {
+    setSelectedOptions((current) => {
+      const previous = current[questionId] ?? [];
+      return {
+        ...current,
+        [questionId]: selectionMode === "single"
+          ? [optionId]
+          : previous.includes(optionId)
+            ? previous.filter((id) => id !== optionId)
+            : [...previous, optionId],
+      };
+    });
+  };
+
+  const submitAnswers = async () => {
+    if (item.kind !== "thread_interaction" || item.interaction.kind !== "ask_user_questions") return;
+    setIsSubmittingInteraction(true);
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      const answers: AskUserQuestionsAnswer[] = item.interaction.payload.questions.map((question) => ({
+        questionId: question.id,
+        optionIds: selectedOptions[question.id] ?? [],
+      }));
+      await issuesApi.respondToInteraction(item.issue.id, item.interaction.id, { version: item.interaction.payload.version, answers });
+      setActionMessage("Answer submitted.");
+      onInteractionResolved?.();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to submit answer");
+    } finally {
+      setIsSubmittingInteraction(false);
+    }
+  };
+
+  const resolveConfirmation = async (outcome: "accept" | "reject") => {
+    if (item.kind !== "thread_interaction" || item.interaction.kind !== "request_confirmation") return;
+    setIsSubmittingInteraction(true);
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      if (outcome === "accept") {
+        await issuesApi.acceptInteraction(item.issue.id, item.interaction.id);
+        setActionMessage("Confirmation approved.");
+      } else {
+        await issuesApi.rejectInteraction(item.issue.id, item.interaction.id, rejectReason.trim() || undefined);
+        setActionMessage("Confirmation rejected.");
+      }
+      onInteractionResolved?.();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : `Failed to ${outcome} confirmation`);
+    } finally {
+      setIsSubmittingInteraction(false);
+    }
+  };
+
+  const questionPayload = item.interaction.kind === "ask_user_questions"
+    ? item.interaction.payload as AskUserQuestionsPayload
+    : null;
+  const confirmationPayload = item.interaction.kind === "request_confirmation"
+    ? item.interaction.payload as RequestConfirmationPayload
+    : null;
 
   return (
     <div className="rounded-xl border border-border/70 bg-card p-4 shadow-sm">
@@ -95,13 +166,76 @@ function BoardDecisionItemCard({
           Pending
         </div>
       </div>
-      <div className="mt-4 flex justify-end border-t border-border/60 pt-4">
-        <Link
-          to={`/issues/${item.issue.id}`}
-          className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
-        >
-          Open issue
-        </Link>
+      <div className="mt-4 space-y-4 border-t border-border/60 pt-4">
+        {questionPayload && (
+          <div className="space-y-4">
+            {questionPayload.questions.map((question) => (
+              <fieldset key={question.id} className="space-y-2">
+                <legend className="text-sm font-medium text-foreground">{question.prompt}</legend>
+                {question.helpText && <p className="text-xs text-muted-foreground">{question.helpText}</p>}
+                <div className="space-y-2">
+                  {question.options.map((option) => {
+                    const selected = (selectedOptions[question.id] ?? []).includes(option.id);
+                    return (
+                      <label key={option.id} className="flex cursor-pointer items-start gap-2 rounded-lg border border-border/70 bg-background/60 px-3 py-2 text-sm hover:bg-muted/30">
+                        <input
+                          className="mt-1"
+                          type={question.selectionMode === "single" ? "radio" : "checkbox"}
+                          name={`${item.interaction.id}-${question.id}`}
+                          checked={selected}
+                          onChange={() => setQuestionOption(question.id, option.id, question.selectionMode)}
+                        />
+                        <span>
+                          <span className="block text-foreground">{option.label}</span>
+                          {option.description && <span className="block text-xs text-muted-foreground">{option.description}</span>}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+            ))}
+            <Button size="sm" onClick={submitAnswers} disabled={isSubmittingInteraction}>
+              {isSubmittingInteraction ? "Sending..." : (questionPayload.submitLabel ?? "Send")}
+            </Button>
+          </div>
+        )}
+
+        {confirmationPayload && (
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">{confirmationPayload.prompt}</p>
+            {confirmationPayload.detailsMarkdown && (
+              <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+                {confirmationPayload.detailsMarkdown}
+              </div>
+            )}
+            <textarea
+              value={rejectReason}
+              onChange={(event) => setRejectReason(event.target.value)}
+              placeholder={confirmationPayload.rejectReasonLabel ?? "Reason for rejection (optional)"}
+              className="min-h-20 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+            />
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" className="bg-green-700 text-white hover:bg-green-600" onClick={() => resolveConfirmation("accept")} disabled={isSubmittingInteraction}>
+                {confirmationPayload.acceptLabel ?? "Approve"}
+              </Button>
+              <Button size="sm" variant="destructive" onClick={() => resolveConfirmation("reject")} disabled={isSubmittingInteraction}>
+                {confirmationPayload.rejectLabel ?? "Reject"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {actionMessage && <p className="text-sm text-green-600 dark:text-green-400">{actionMessage}</p>}
+        {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+        <div className="flex justify-end">
+          <Link
+            to={`/issues/${item.issue.id}`}
+            className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
+          >
+            Open source issue
+          </Link>
+        </div>
       </div>
     </div>
   );
@@ -268,6 +402,10 @@ export function Approvals() {
                     onReject={item.kind === "approval" ? () => rejectMutation.mutate(item.approval.id) : undefined}
                     isPending={approveMutation.isPending || rejectMutation.isPending}
                     pendingAction={approveMutation.isPending ? "approve" : rejectMutation.isPending ? "reject" : null}
+                    onInteractionResolved={() => {
+                      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.boardDecisionItems(selectedCompanyId!) });
+                      queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(item.kind === "thread_interaction" ? item.issue.id : "") });
+                    }}
                   />
                 )) : group.approvals.map((approval) => (
                   <ApprovalCard
