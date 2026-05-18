@@ -11,6 +11,7 @@ import {
   Boxes,
   Repeat,
   GitBranch,
+  ShieldCheck,
   Settings,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -22,6 +23,7 @@ import { SidebarAgents } from "./SidebarAgents";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { heartbeatsApi } from "../api/heartbeats";
+import { listPendingBoardDecisionItems } from "../lib/boardDecisionItems";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { useInboxBadge } from "../hooks/useInboxBadge";
@@ -33,6 +35,11 @@ export function Sidebar() {
   const { openNewIssue } = useDialogActions();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const inboxBadge = useInboxBadge(selectedCompanyId);
+  const { data: pendingBoardDecisionItems = [] } = useQuery({
+    queryKey: queryKeys.approvals.boardDecisionItems(selectedCompanyId!),
+    queryFn: () => listPendingBoardDecisionItems(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -88,6 +95,12 @@ export function Sidebar() {
             badge={inboxBadge.inbox}
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
+          />
+          <SidebarNavItem
+            to="/approvals/pending"
+            label="Approvals"
+            icon={ShieldCheck}
+            badge={pendingBoardDecisionItems.length}
           />
           <PluginSlotOutlet
             slotTypes={["sidebar"]}

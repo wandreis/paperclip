@@ -104,6 +104,7 @@ export const queryKeys = {
   approvals: {
     list: (companyId: string, status?: string) =>
       ["approvals", companyId, status] as const,
+    boardDecisionItems: (companyId: string) => ["approvals", companyId, "board-decision-items"] as const,
     detail: (approvalId: string) => ["approvals", "detail", approvalId] as const,
     comments: (approvalId: string) => ["approvals", "comments", approvalId] as const,
     issues: (approvalId: string) => ["approvals", "issues", approvalId] as const,

@@ -212,7 +212,7 @@ export const issuesApi = {
   respondToInteraction: (
     id: string,
     interactionId: string,
-    data: { answers: AskUserQuestionsAnswer[]; summaryMarkdown?: string | null },
+    data: { version?: number; answers: AskUserQuestionsAnswer[]; summaryMarkdown?: string | null },
   ) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/respond`, data),
   getComment: (id: string, commentId: string) =>
